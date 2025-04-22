@@ -270,9 +270,9 @@ def cupy_kernel(strFunction, objVariables):
 
 	return strKernel
 # end
-
-from cupy._util import memoize
 import cupy
+from cupy._util import memoize
+
 
 @memoize(for_each_device=True)
 def cupy_launch(strFunction, strKernel):
