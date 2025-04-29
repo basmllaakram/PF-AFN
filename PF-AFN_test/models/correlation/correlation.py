@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-
 import torch
 
 import cupy
@@ -30,8 +29,7 @@ kernel_Correlation_rearrange = '''
 	  int intRearrange = ((SIZE_3(input) + 6*{{intStride}}) * intPaddedY) + intPaddedX;
 
 	  output[(((intSample * SIZE_1(output) * SIZE_2(output)) + intRearrange) * SIZE_1(input)) + intChannel] = fltValue;
-	}
-'''
+	}'''
 
 kernel_Correlation_updateOutput = '''
 	extern "C" __global__ void kernel_Correlation_updateOutput(
@@ -100,8 +98,7 @@ kernel_Correlation_updateOutput = '''
 	      top[index + item*SIZE_1(top)*SIZE_2(top)*SIZE_3(top)] = total_sum / (float)sumelems;
 	    }
 	  }
-	}
-'''
+	}'''
 
 kernel_Correlation_updateGradFirst = '''
 	#define ROUND_OFF 50000
@@ -168,8 +165,6 @@ kernel_Correlation_updateGradFirst = '''
 '''
 
 kernel_Correlation_updateGradSecond = '''
-	#define ROUND_OFF 50000
-
 	extern "C" __global__ void kernel_Correlation_updateGradSecond(
 	  const int n,
 	  const int intSample,
@@ -183,36 +178,28 @@ kernel_Correlation_updateGradSecond = '''
 	  int l = (intIndex / SIZE_1(gradSecond)) % SIZE_3(gradSecond) + 3*{{intStride}}; // w-pos
 	  int m = (intIndex / SIZE_1(gradSecond) / SIZE_3(gradSecond)) % SIZE_2(gradSecond) + 3*{{intStride}}; // h-pos
 	  
-	  // round_off is a trick to enable integer division with ceil, even for negative numbers
-	  // We use a large offset, for the inner part not to become negative.
 	  const int round_off = ROUND_OFF;
 	  const int round_off_s1 = {{intStride}} * round_off;
 	  
+	  int xmin = (l - 3*{{intStride}} + round_off_s1 - 1) / {{intStride}} + 1 - round_off; // ceil (l - 3*{{intStride}}) / {{intStride}}
+	  int ymin = (m - 3*{{intStride}} + round_off_s1 - 1) / {{intStride}} + 1 - round_off; // ceil (l - 3*{{intStride}}) / {{intStride}}
+	  int xmax = (l - 3*{{intStride}} + round_off_s1) / {{intStride}} - round_off; // floor (l - 3*{{intStride}}) / {{intStride}}
+	  int ymax = (m - 3*{{intStride}} + round_off_s1) / {{intStride}} - round_off; // floor (m - 3*{{intStride}}) / {{intStride}}
+	  
 	  float sum = 0;
-	  for (int p = -3; p <= 3; p++) {
-	    for (int o = -3; o <= 3; o++) {
-	      int s2o = {{intStride}} * o;
-	      int s2p = {{intStride}} * p;
-	      
-	      //Get X,Y ranges and clamp
-	      // We add round_off before_s1 the int division and subtract round_off after it, to ensure the formula matches ceil behavior:
-	      int xmin = (l - 3*{{intStride}} - s2o + round_off_s1 - 1) / {{intStride}} + 1 - round_off; // ceil (l - 3*{{intStride}} - s2o) / {{intStride}}
-	      int ymin = (m - 3*{{intStride}} - s2p + round_off_s1 - 1) / {{intStride}} + 1 - round_off; // ceil (l - 3*{{intStride}} - s2o) / {{intStride}}
-	      
-	      // Same here:
-	      int xmax = (l - 3*{{intStride}} - s2o + round_off_s1) / {{intStride}} - round_off; // floor (l - 3*{{intStride}} - s2o) / {{intStride}}
-	      int ymax = (m - 3*{{intStride}} - s2p + round_off_s1) / {{intStride}} - round_off; // floor (m - 3*{{intStride}} - s2p) / {{intStride}}
-          
-	      if (xmax>=0 && ymax>=0 && (xmin<=SIZE_3(gradOutput)-1) && (ymin<=SIZE_2(gradOutput)-1)) {
-	        xmin = max(0,xmin);
-	        xmax = min(SIZE_3(gradOutput)-1,xmax);
-	        
-	        ymin = max(0,ymin);
-	        ymax = min(SIZE_2(gradOutput)-1,ymax);
-	        
-	        // Get rbot0 data:
-	        int idxbot0 = ((intSample * SIZE_1(rbot0) + (m-s2p)) * SIZE_2(rbot0) + (l-s2o)) * SIZE_3(rbot0) + n;
-	        float bot0tmp = rbot0[idxbot0]; // rbot1[l+s2o,m+s2p,n]
+	  if (xmax>=0 && ymax>=0 && (xmin<=SIZE_3(gradOutput)-1) && (ymin<=SIZE_2(gradOutput)-1)) {
+	    xmin = max(0,xmin);
+	    xmax = min(SIZE_3(gradOutput)-1,xmax);
+	    ymin = max(0,ymin);
+	    ymax = min(SIZE_2(gradOutput)-1,ymax);
+	    
+	    for (int p = -3; p <= 3; p++) {
+	      for (int o = -3; o <= 3; o++) {
+	        // Get rbot1 data:
+	        int s2o = {{intStride}} * o;
+	        int s2p = {{intStride}} * p;
+	        int idxbot1 = ((intSample * SIZE_1(rbot0) + (m+s2p)) * SIZE_2(rbot0) + (l+s2o)) * SIZE_3(rbot0) + n;
+	        float bot1tmp = rbot1[idxbot1]; // rbot1[l+s2o,m+s2p,n]
 	        
 	        // Index offset for gradOutput in following loops:
 	        int op = (p+3) * 7 + (o+3); // index[o,p]
@@ -221,54 +208,34 @@ kernel_Correlation_updateGradSecond = '''
 	        for (int y = ymin; y <= ymax; y++) {
 	          for (int x = xmin; x <= xmax; x++) {
 	            int idxgradOutput = (idxopoffset * SIZE_2(gradOutput) + y) * SIZE_3(gradOutput) + x; // gradOutput[x,y,o,p]
-	            sum += gradOutput[idxgradOutput] * bot0tmp;
+	            sum += gradOutput[idxgradOutput] * bot1tmp;
 	          }
 	        }
 	      }
 	    }
 	  }
 	  const int sumelems = SIZE_1(gradSecond);
-	  const int bot1index = ((n * SIZE_2(gradSecond)) + (m-3*{{intStride}})) * SIZE_3(gradSecond) + (l-3*{{intStride}});
-	  gradSecond[bot1index + intSample*SIZE_1(gradSecond)*SIZE_2(gradSecond)*SIZE_3(gradSecond)] = sum / (float)sumelems;
+	  const int bot0index = ((n * SIZE_2(gradSecond)) + (m-3*{{intStride}})) * SIZE_3(gradSecond) + (l-3*{{intStride}});
+	  gradSecond[bot0index + intSample*SIZE_1(gradSecond)*SIZE_2(gradSecond)*SIZE_3(gradSecond)] = sum / (float)sumelems;
 	} }
 '''
 
 def cupy_kernel(strFunction, objVariables):
-	strKernel = globals()[strFunction].replace('{{intStride}}', str(objVariables['intStride']))
+    strKernel = globals()[strFunction].replace('{{intStride}}', str(objVariables['intStride']))
 
-	while True:
-		objMatch = re.search('(SIZE_)([0-4])(\()([^\)]*)(\))', strKernel)
+    while True:
+        objMatch = re.search(r'(SIZE_)([0-4])(\()([^\)]*)(\))', strKernel)
 
-		if objMatch is None:
-			break
-		# end
+        if objMatch is None:
+            break
 
-		intArg = int(objMatch.group(2))
+        intArg = int(objMatch.group(2))
+        strTensor = objMatch.group(4)
 
-		strTensor = objMatch.group(4)
-		intSizes = objVariables[strTensor].size()
+        intSizes = objVariables[strTensor].size()
+        strKernel = strKernel.replace(objMatch.group(0), str(intSizes[intArg]))
 
-		strKernel = strKernel.replace(objMatch.group(), str(intSizes[intArg]))
-	# end
-
-	while True:
-		objMatch = re.search('(VALUE_)([0-4])(\()([^\)]+)(\))', strKernel)
-
-		if objMatch is None:
-			break
-		# end
-
-		intArgs = int(objMatch.group(2))
-		strArgs = objMatch.group(4).split(',')
-
-		strTensor = strArgs[0]
-		intStrides = objVariables[strTensor].stride()
-		strIndex = [ '((' + strArgs[intArg + 1].replace('{', '(').replace('}', ')').strip() + ')*' + str(intStrides[intArg]) + ')' for intArg in range(intArgs) ]
-
-		strKernel = strKernel.replace(objMatch.group(0), strTensor + '[' + str.join('+', strIndex) + ']')
-	# end
-
-	return strKernel
+    return strKernel
 # end
 
 import cupy
